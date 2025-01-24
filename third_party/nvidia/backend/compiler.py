@@ -143,10 +143,9 @@ class CUDAOptions:
 from xdsl.context import MLContext
 from xdsl.dialects import get_all_dialects, arith
 from xdsl.passes import PipelinePass, PipelinePassSpec, ModulePass
-from xdsl.transforms import canonicalize
 from xdsl.parser import Parser
 from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, result_def
-from xdsl.dialects.builtin import AnyTensorTypeConstr, ModuleOp, TensorType
+from xdsl.dialects.builtin import AnyTensorTypeConstr, ModuleOp, TensorType, DenseIntOrFPElementsAttr
 from xdsl.ir import Dialect
 from xdsl.pattern_rewriter import RewritePattern, op_type_rewrite_pattern, PatternRewriter, PatternRewriteWalker
 from xdsl.printer import Printer
@@ -167,22 +166,28 @@ TritonDialect = Dialect("tt", [BroadcastOp], [])
 class TritonReorderBroadcast(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: BroadcastOp, rewriter: PatternRewriter, /):
-        if len(op.result.uses) == 1 and isinstance(list(op.result.uses)[0].operation, arith.FloatingPointLikeBinaryOperation):
-            binary_op = list(op.result.uses)[0].operation
-            binary_op_value_mapper = {}
-            for operand in binary_op.operands:
-                if operand is op.result:
-                    binary_op_value_mapper[operand] = op.src
-                elif type(operand) is arith.ConstantOp and type(operand.value) is TensorType:
-                    operand.value.shape = 
+        if len(op.result.uses) > 1 or not isinstance(list(op.result.uses)[0].operation, arith.FloatingPointLikeBinaryOperation):
+            return
+        
+        binary_op = list(op.result.uses)[0].operation
 
-            print(binary_op.attributes)
-            new_binary_op = binary_op.clone({op.result: op.src})
-            new_broadcast_op = op.clone({op.src: new_binary_op.results[0]})
-            rewriter.replace_op(op, new_binary_op)
-            rewriter.replace_op(binary_op, new_broadcast_op)
-            print("hell yeah")
-        print("FOUND IT!")
+        binary_op_value_mapper = {}
+        for operand in binary_op.operands:
+            if operand is op.result:
+                binary_op_value_mapper[operand] = op.src
+            elif type(operand.op) is arith.ConstantOp:
+                if not operand.op.value.is_splat():
+                    return
+                val = operand.op.value
+                new_val = DenseIntOrFPElementsAttr.tensor_from_list([val.get_values()[0]], val.get_element_type(), op.src.type.get_shape())
+                rewriter.replace_op(operand.op, arith.ConstantOp(new_val, op.src.type))
+
+        new_binary_op = binary_op.clone(binary_op_value_mapper)
+        new_binary_op.results[0].type = op.src.type
+        new_broadcast_op = op.clone({op.src: new_binary_op.results[0]})
+        rewriter.replace_op(op, new_binary_op)
+        rewriter.replace_op(binary_op, new_broadcast_op)
+
 
 class TritonReorderBroadcastPass(ModulePass):
     name = "reorder-broadcast"
@@ -276,7 +281,7 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_combine(pm1)
         pm1.run(mod)
         
-        mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod))
+        mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod)) # we currently lose this reference data, which corresponds mlir lines with code lines
         print(mod_str)
         xdsl_mod = Parser(xdsl_ctx, mod_str).parse_module()
         xdsl_pipeline.apply(xdsl_ctx, xdsl_mod)
