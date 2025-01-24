@@ -517,6 +517,7 @@ class JITFunction(KernelInterface[T]):
         return {}, target, backend, binder
 
     def run(self, *args, grid, warmup, **kwargs):
+        print("LETSFUCKINGGO")
         kwargs["debug"] = kwargs.get("debug", self.debug) or os.environ.get("TRITON_DEBUG", "0") == "1"
 
         # parse options

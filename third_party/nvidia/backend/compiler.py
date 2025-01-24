@@ -140,6 +140,19 @@ class CUDAOptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+from xdsl.context import MLContext
+from xdsl.dialects import get_all_dialects
+from xdsl.passes import PipelinePass, PipelinePassSpec
+from xdsl.transforms import canonicalize
+from xdsl.parser import Parser
+import re
+
+xdsl_ctx = MLContext()
+xdsl_ctx.allow_unregistered = True
+for dialect_name, dialect_factory in get_all_dialects().items():
+    xdsl_ctx.register_dialect(dialect_name, dialect_factory)
+xdsl_pipeline = PipelinePass((canonicalize.CanonicalizePass().from_pass_spec(PipelinePassSpec("canonicalize", dict())), ))
+
 class CUDABackend(BaseBackend):
 
     @staticmethod
@@ -208,18 +221,28 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, opt):
-        pm = ir.pass_manager(mod.context)
-        pm.enable_debug()
-        passes.common.add_inliner(pm)
-        passes.ttir.add_rewrite_tensor_pointer(pm)
-        passes.common.add_canonicalizer(pm)
-        passes.ttir.add_combine(pm)
-        passes.ttir.add_reorder_broadcast(pm)
-        passes.common.add_cse(pm)
-        passes.common.add_licm(pm)
-        passes.common.add_symbol_dce(pm)
-        passes.ttir.add_loop_unroll(pm)
-        pm.run(mod)
+        pm1 = ir.pass_manager(mod.context)
+        pm1.enable_debug()
+        passes.common.add_inliner(pm1)
+        pm1.run(mod)
+
+        mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod))
+        print(mod_str)
+        xdsl_mod = Parser(xdsl_ctx, mod_str).parse_module()
+        xdsl_pipeline.apply(xdsl_ctx, xdsl_mod)
+        print(mod_str)
+
+        pm2 = ir.pass_manager(mod.context)
+        pm2.enable_debug()
+        passes.ttir.add_rewrite_tensor_pointer(pm2)
+        passes.common.add_canonicalizer(pm2)
+        passes.ttir.add_combine(pm2)
+        passes.ttir.add_reorder_broadcast(pm2)
+        passes.common.add_cse(pm2)
+        passes.common.add_licm(pm2)
+        passes.common.add_symbol_dce(pm2)
+        passes.ttir.add_loop_unroll(pm2)
+        pm2.run(mod)
         return mod
 
     @staticmethod

@@ -2,6 +2,7 @@
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <iostream>
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -441,7 +442,7 @@ void init_triton_ir(py::module &&m) {
            [](OpState &self) -> std::string {
              std::string str;
              llvm::raw_string_ostream os(str);
-             auto printingFlags = OpPrintingFlags();
+             auto printingFlags = OpPrintingFlags().printGenericOpForm();
              printingFlags.enableDebugInfo();
              self->print(os, printingFlags);
              return str;
@@ -513,7 +514,7 @@ void init_triton_ir(py::module &&m) {
            [](ModuleOp &self) -> std::string {
              std::string str;
              llvm::raw_string_ostream os(str);
-             auto printingFlags = OpPrintingFlags();
+             auto printingFlags = OpPrintingFlags().printGenericOpForm();
              printingFlags.enableDebugInfo();
              self.print(os, printingFlags);
              return str;
@@ -1700,7 +1701,7 @@ void init_triton_ir(py::module &&m) {
                });
              }
              if (haveDump) {
-               auto printingFlags = OpPrintingFlags();
+               auto printingFlags = OpPrintingFlags().printGenericOpForm();
                printingFlags.elideLargeElementsAttrs(16);
                printingFlags.enableDebugInfo();
                auto printAlways = [funcToDump](Pass *, Operation *op) -> bool {
@@ -1728,7 +1729,7 @@ void init_triton_ir(py::module &&m) {
       .def("run", [](PassManager &self, ModuleOp &mod) {
         // TODO: maybe dump module to file and print error for better
         // diagnostics
-
+        std::cout << "RUNNING SHIT\n";
         auto reproducerPath =
             triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
         if (!reproducerPath.empty()) {
