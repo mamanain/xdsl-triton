@@ -141,17 +141,64 @@ class CUDAOptions:
 
 
 from xdsl.context import MLContext
-from xdsl.dialects import get_all_dialects
-from xdsl.passes import PipelinePass, PipelinePassSpec
+from xdsl.dialects import get_all_dialects, arith
+from xdsl.passes import PipelinePass, PipelinePassSpec, ModulePass
 from xdsl.transforms import canonicalize
 from xdsl.parser import Parser
+from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, result_def
+from xdsl.dialects.builtin import AnyTensorTypeConstr, ModuleOp, TensorType
+from xdsl.ir import Dialect
+from xdsl.pattern_rewriter import RewritePattern, op_type_rewrite_pattern, PatternRewriter, PatternRewriteWalker
+from xdsl.printer import Printer
 import re
 
+@irdl_op_definition
+class BroadcastOp(IRDLOperation):
+    name = "tt.broadcast"
+
+    src = operand_def(AnyTensorTypeConstr)
+    result = result_def(AnyTensorTypeConstr)
+
+    assembly_format = "$src attr-dict `:` type($src) `->` type($result)"
+
+TritonDialect = Dialect("tt", [BroadcastOp], [])
+
+@dataclass
+class TritonReorderBroadcast(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: BroadcastOp, rewriter: PatternRewriter, /):
+        if len(op.result.uses) == 1 and isinstance(list(op.result.uses)[0].operation, arith.FloatingPointLikeBinaryOperation):
+            binary_op = list(op.result.uses)[0].operation
+            binary_op_value_mapper = {}
+            for operand in binary_op.operands:
+                if operand is op.result:
+                    binary_op_value_mapper[operand] = op.src
+                elif type(operand) is arith.ConstantOp and type(operand.value) is TensorType:
+                    operand.value.shape = 
+
+            print(binary_op.attributes)
+            new_binary_op = binary_op.clone({op.result: op.src})
+            new_broadcast_op = op.clone({op.src: new_binary_op.results[0]})
+            rewriter.replace_op(op, new_binary_op)
+            rewriter.replace_op(binary_op, new_broadcast_op)
+            print("hell yeah")
+        print("FOUND IT!")
+
+class TritonReorderBroadcastPass(ModulePass):
+    name = "reorder-broadcast"
+
+    def apply(self, ctx: MLContext, op: ModuleOp) -> None:
+        PatternRewriteWalker(
+            TritonReorderBroadcast()
+        ).rewrite_module(op)
+
+    
 xdsl_ctx = MLContext()
 xdsl_ctx.allow_unregistered = True
 for dialect_name, dialect_factory in get_all_dialects().items():
     xdsl_ctx.register_dialect(dialect_name, dialect_factory)
-xdsl_pipeline = PipelinePass((canonicalize.CanonicalizePass().from_pass_spec(PipelinePassSpec("canonicalize", dict())), ))
+xdsl_ctx.register_dialect("tt", lambda: TritonDialect)
+xdsl_pipeline = PipelinePass((TritonReorderBroadcastPass().from_pass_spec(PipelinePassSpec("reorder-broadcast", dict())), ))
 
 class CUDABackend(BaseBackend):
 
@@ -224,19 +271,19 @@ class CUDABackend(BaseBackend):
         pm1 = ir.pass_manager(mod.context)
         pm1.enable_debug()
         passes.common.add_inliner(pm1)
+        passes.ttir.add_rewrite_tensor_pointer(pm1)
+        passes.common.add_canonicalizer(pm1)
+        passes.ttir.add_combine(pm1)
         pm1.run(mod)
-
+        
         mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod))
         print(mod_str)
         xdsl_mod = Parser(xdsl_ctx, mod_str).parse_module()
         xdsl_pipeline.apply(xdsl_ctx, xdsl_mod)
-        print(mod_str)
+        print(xdsl_mod.print(Printer(print_generic_format=True)))
 
         pm2 = ir.pass_manager(mod.context)
         pm2.enable_debug()
-        passes.ttir.add_rewrite_tensor_pointer(pm2)
-        passes.common.add_canonicalizer(pm2)
-        passes.ttir.add_combine(pm2)
         passes.ttir.add_reorder_broadcast(pm2)
         passes.common.add_cse(pm2)
         passes.common.add_licm(pm2)
