@@ -150,6 +150,7 @@ from xdsl.ir import Dialect
 from xdsl.pattern_rewriter import RewritePattern, op_type_rewrite_pattern, PatternRewriter, PatternRewriteWalker
 from xdsl.printer import Printer
 import re
+from io import StringIO
 
 @irdl_op_definition
 class BroadcastOp(IRDLOperation):
@@ -281,21 +282,28 @@ class CUDABackend(BaseBackend):
         passes.ttir.add_combine(pm1)
         pm1.run(mod)
         
-        mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod)) # we currently lose this reference data, which corresponds mlir lines with code lines
-        print(mod_str)
+        mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod)).strip() # we currently lose this reference data, which corresponds mlir lines with code lines
         xdsl_mod = Parser(xdsl_ctx, mod_str).parse_module()
         xdsl_pipeline.apply(xdsl_ctx, xdsl_mod)
-        print(xdsl_mod.print(Printer(print_generic_format=True)))
 
-        pm2 = ir.pass_manager(mod.context)
+        tmp_file = 'tmp_xdsl.ttir'
+        # currently has to go through a file because I don't think there is a method to construct a module from a string currently
+        with open(tmp_file, 'w') as f:
+            stream = StringIO()
+            xdsl_mod.print(Printer(stream=stream, print_generic_format=True))
+            f.write(stream.getvalue().strip(" {}"))
+        
+        mod_after_xdsl = ir.parse_mlir_module(tmp_file, mod.context)
+        mod_after_xdsl.context = mod.context
+        pm2 = ir.pass_manager(mod_after_xdsl.context)
         pm2.enable_debug()
-        passes.ttir.add_reorder_broadcast(pm2)
+        # passes.ttir.add_reorder_broadcast(pm2) --- this is the pass we reimplemented
         passes.common.add_cse(pm2)
         passes.common.add_licm(pm2)
         passes.common.add_symbol_dce(pm2)
         passes.ttir.add_loop_unroll(pm2)
-        pm2.run(mod)
-        return mod
+        pm2.run(mod_after_xdsl)
+        return mod_after_xdsl
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
