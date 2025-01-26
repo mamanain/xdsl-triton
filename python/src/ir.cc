@@ -2,7 +2,6 @@
 #include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
-#include <iostream>
 
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
@@ -1729,7 +1728,6 @@ void init_triton_ir(py::module &&m) {
       .def("run", [](PassManager &self, ModuleOp &mod) {
         // TODO: maybe dump module to file and print error for better
         // diagnostics
-        std::cout << "RUNNING SHIT\n";
         auto reproducerPath =
             triton::tools::getStrEnv("TRITON_REPRODUCER_PATH");
         if (!reproducerPath.empty()) {
