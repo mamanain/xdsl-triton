@@ -441,7 +441,7 @@ void init_triton_ir(py::module &&m) {
            [](OpState &self) -> std::string {
              std::string str;
              llvm::raw_string_ostream os(str);
-             auto printingFlags = OpPrintingFlags();
+             auto printingFlags = OpPrintingFlags().printGenericOpForm();
              printingFlags.enableDebugInfo();
              self->print(os, printingFlags);
              return str;
@@ -513,7 +513,7 @@ void init_triton_ir(py::module &&m) {
            [](ModuleOp &self) -> std::string {
              std::string str;
              llvm::raw_string_ostream os(str);
-             auto printingFlags = OpPrintingFlags();
+             auto printingFlags = OpPrintingFlags().printGenericOpForm();
              printingFlags.enableDebugInfo();
              self.print(os, printingFlags);
              return str;
@@ -1700,7 +1700,7 @@ void init_triton_ir(py::module &&m) {
                });
              }
              if (haveDump) {
-               auto printingFlags = OpPrintingFlags();
+               auto printingFlags = OpPrintingFlags().printGenericOpForm();
                printingFlags.elideLargeElementsAttrs(16);
                printingFlags.enableDebugInfo();
                auto printAlways = [funcToDump](Pass *, Operation *op) -> bool {

@@ -140,6 +140,72 @@ class CUDAOptions:
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
 
+from xdsl.context import MLContext
+from xdsl.dialects import get_all_dialects, arith
+from xdsl.passes import PipelinePass, PipelinePassSpec, ModulePass
+from xdsl.parser import Parser
+from xdsl.irdl import IRDLOperation, irdl_op_definition, operand_def, result_def
+from xdsl.dialects.builtin import AnyTensorTypeConstr, ModuleOp, TensorType, DenseIntOrFPElementsAttr
+from xdsl.ir import Dialect
+from xdsl.pattern_rewriter import RewritePattern, op_type_rewrite_pattern, PatternRewriter, PatternRewriteWalker
+from xdsl.printer import Printer
+import re
+from io import StringIO
+
+@irdl_op_definition
+class BroadcastOp(IRDLOperation):
+    name = "tt.broadcast"
+
+    src = operand_def(AnyTensorTypeConstr)
+    result = result_def(AnyTensorTypeConstr)
+
+    assembly_format = "$src attr-dict `:` type($src) `->` type($result)"
+
+TritonDialect = Dialect("tt", [BroadcastOp], [])
+
+@dataclass
+class TritonReorderBroadcast(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: BroadcastOp, rewriter: PatternRewriter, /):
+        if len(op.result.uses) > 1 or not isinstance(list(op.result.uses)[0].operation, arith.FloatingPointLikeBinaryOperation):
+            return
+        
+        binary_op = list(op.result.uses)[0].operation
+
+        binary_op_value_mapper = {}
+        for operand in binary_op.operands:
+            if operand is op.result:
+                binary_op_value_mapper[operand] = op.src
+            elif type(operand.op) is arith.ConstantOp:
+                if not operand.op.value.is_splat():
+                    return
+                val = operand.op.value
+                new_val = DenseIntOrFPElementsAttr.tensor_from_list([val.get_values()[0]], val.get_element_type(), op.src.type.get_shape())
+                rewriter.replace_op(operand.op, arith.ConstantOp(new_val, op.src.type))
+
+        new_binary_op = binary_op.clone(binary_op_value_mapper)
+        new_binary_op.results[0].type = op.src.type
+        new_broadcast_op = op.clone({op.src: new_binary_op.results[0]})
+        rewriter.replace_op(op, new_binary_op)
+        rewriter.replace_op(binary_op, new_broadcast_op)
+
+
+class TritonReorderBroadcastPass(ModulePass):
+    name = "reorder-broadcast"
+
+    def apply(self, ctx: MLContext, op: ModuleOp) -> None:
+        PatternRewriteWalker(
+            TritonReorderBroadcast()
+        ).rewrite_module(op)
+
+    
+xdsl_ctx = MLContext()
+xdsl_ctx.allow_unregistered = True
+for dialect_name, dialect_factory in get_all_dialects().items():
+    xdsl_ctx.register_dialect(dialect_name, dialect_factory)
+xdsl_ctx.register_dialect("tt", lambda: TritonDialect)
+xdsl_pipeline = PipelinePass((TritonReorderBroadcastPass().from_pass_spec(PipelinePassSpec("reorder-broadcast", dict())), ))
+
 class CUDABackend(BaseBackend):
 
     @staticmethod
@@ -208,19 +274,36 @@ class CUDABackend(BaseBackend):
 
     @staticmethod
     def make_ttir(mod, metadata, opt):
-        pm = ir.pass_manager(mod.context)
-        pm.enable_debug()
-        passes.common.add_inliner(pm)
-        passes.ttir.add_rewrite_tensor_pointer(pm)
-        passes.common.add_canonicalizer(pm)
-        passes.ttir.add_combine(pm)
-        passes.ttir.add_reorder_broadcast(pm)
-        passes.common.add_cse(pm)
-        passes.common.add_licm(pm)
-        passes.common.add_symbol_dce(pm)
-        passes.ttir.add_loop_unroll(pm)
-        pm.run(mod)
-        return mod
+        pm1 = ir.pass_manager(mod.context)
+        pm1.enable_debug()
+        passes.common.add_inliner(pm1)
+        passes.ttir.add_rewrite_tensor_pointer(pm1)
+        passes.common.add_canonicalizer(pm1)
+        passes.ttir.add_combine(pm1)
+        pm1.run(mod)
+        
+        mod_str = re.sub(r"loc\([^()]*\)|#loc\d*\s*=", "", str(mod)).strip() # we currently lose this reference data, which corresponds mlir lines with code lines
+        xdsl_mod = Parser(xdsl_ctx, mod_str).parse_module()
+        xdsl_pipeline.apply(xdsl_ctx, xdsl_mod)
+
+        tmp_file = 'tmp_xdsl.ttir'
+        # currently has to go through a file because I don't think there is a method to construct a module from a string currently
+        with open(tmp_file, 'w') as f:
+            stream = StringIO()
+            xdsl_mod.print(Printer(stream=stream, print_generic_format=True))
+            f.write(stream.getvalue().strip(" {}"))
+        
+        mod_after_xdsl = ir.parse_mlir_module(tmp_file, mod.context)
+        mod_after_xdsl.context = mod.context
+        pm2 = ir.pass_manager(mod_after_xdsl.context)
+        pm2.enable_debug()
+        # passes.ttir.add_reorder_broadcast(pm2) --- this is the pass we reimplemented
+        passes.common.add_cse(pm2)
+        passes.common.add_licm(pm2)
+        passes.common.add_symbol_dce(pm2)
+        passes.ttir.add_loop_unroll(pm2)
+        pm2.run(mod_after_xdsl)
+        return mod_after_xdsl
 
     @staticmethod
     def make_ttgir(mod, metadata, opt, capability):
