@@ -1627,3 +1627,12 @@ def isfinited(arg0, _builder=None):
     return core.extern_elementwise("", "", [arg0], {
         (core.dtype("fp64"), ): ("__nv_isfinited", core.dtype("int32")),
     }, is_pure=True, _builder=_builder).to(core.int1, _builder=_builder)
+
+
+@core.extern
+def frexp(arg0, arg1, _builder=None):
+    return core.extern_elementwise(
+        "", "", [arg0, arg1], {
+            (core.dtype("fp64"), core.pointer_type(core.dtype("int32"))): ("__nv_frexp", core.dtype("fp64"))
+        }, is_pure=True, _builder=_builder)
+

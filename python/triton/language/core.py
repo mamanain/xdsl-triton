@@ -597,6 +597,9 @@ class pointer_type(dtype):
     @property
     def scalar(self):
         return self
+    
+    def __hash__(self):
+        return hash((self.name, ))
 
 
 class nv_tma_desc_type(pointer_type):
@@ -2947,11 +2950,11 @@ def extern_elementwise(lib_name: str, lib_path: str, args: list, arg_type_symbol
         # Get the broadcast shape over all the arguments
         for item in dispatch_args:
             _, broadcast_arg = semantic.binary_op_type_checking_impl(item, broadcast_arg, _builder,
-                                                                     arithmetic_check=arithmetic_check)
+                                                                     arithmetic_check=arithmetic_check, allow_rhs_ptr=True, allow_lhs_ptr=True)
         # Change the shape of each argument based on the broadcast shape
         for i in builtins.range(len(dispatch_args)):
             dispatch_args[i], _ = semantic.binary_op_type_checking_impl(dispatch_args[i], broadcast_arg, _builder,
-                                                                        arithmetic_check=arithmetic_check)
+                                                                        arithmetic_check=arithmetic_check, allow_rhs_ptr=True, allow_lhs_ptr=True)
         if not all_scalar:
             ret_shape = broadcast_arg.shape
     func = _builder.create_extern_elementwise
