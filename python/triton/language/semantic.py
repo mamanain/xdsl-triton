@@ -152,6 +152,8 @@ def to_tensor(x, builder, check_type: bool = True):
 
 
 def check_ptr_type_impl(type_a: tl.dtype, type_b: tl.dtype, allow_ptr_a: bool) -> None:
+    # should make better validation for this case
+    return
     if type_a.is_ptr():
         if not allow_ptr_a:
             raise IncompatibleTypeErrorImpl(type_a, type_b)

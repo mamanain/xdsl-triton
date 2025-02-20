@@ -784,3 +784,7 @@ def logb(arg0):
 
 def isfinited(arg0):
     ...
+
+
+def frexp(arg0, arg1):
+    ...
